@@ -67,7 +67,7 @@ def nltk_ner(text):
     return ner
 
 # 还原词性+分词
-def nltk_words(text):
+def nltk_words(text): 
     wnl = WordNetLemmatizer()
     sentences = sent_tokenize(text)
     # stopword = stopwords.words('english')
