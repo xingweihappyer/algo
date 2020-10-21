@@ -61,3 +61,11 @@ for epoch in range(50):
         loss.backward()
         optimizer.step()
     print('loss:{:.6f}'.format(running_loss / len(data)))
+    
+    
+    
+""" 提取词向量 """
+w =  model.embedding.weight
+print(w.shape)
+
+
