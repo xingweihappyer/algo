@@ -1,0 +1,562 @@
+
+
+""" #  """
+
+""" 
+IndexFlatL2 - 最基础的Index 
+IndexFlatL2类型遍历计算查询向量与被查询向量的L2精确距离，不需要训练操作（大部分index类型都需要train操作）。
+在构建index时要提供相关参数，这里是向量维数d，构建完成index之后可以通过add()和search（）进行查询。
+"""
+
+
+import numpy as np
+d = 3                               # 向量维度
+nb = 100000                         # 向量集大小
+nq = 10000                          # 查询次数
+np.random.seed(1234)                # 确定结果种子,使结果可重现
+xb = np.random.random((nb, d)).astype('float32')
+xb[:, 0] += np.arange(nb) / 1000.   # 每一项增加了一个等差数列的对应项数
+xq = np.random.random((nq, d)).astype('float32')
+xq[:, 0] += np.arange(nq) / 1000.
+
+
+import faiss
+index = faiss.IndexFlatL2(d)        # 构建FlatL2索引
+print(index.is_trained)
+index.add(xb)                       # 向索引中添加向量
+print(index.ntotal)
+
+
+k = 3                               # k=4的 k临近搜索
+D, I = index.search(xb[:5], k)      # 测试
+print(I)
+print(D)
+D, I = index.search(xq, k)          # 执行搜索
+print(I[:5])                        # 最初五次查询的结果
+print(I[-5:])                       # 最后五次查询的结果
+
+
+""" 
+更快的搜索 -倒排表快速索引 IndexIVFFlat 
+
+在数据量非常大的时候，需要对数据做预处理来提高索引效率。
+一种方式是对数据库向量进行分割，划分为多个d维维诺空间，查询阶段，只需要将查询向量落入的维诺空间中的数据库向量与之比较，
+返回计算所得的k个最近邻结果即可，大大缩减了索引时间。
+nlist参数控制将数据集向量分为多少个维度空间； 
+nprobe参数控制在多少个维度空间的范围内进行索引。
+
+在这种情况下，由于矢量未精确存储，因此搜索方法返回的距离也是近似值。
+
+
+"""
+
+import numpy as np
+d = 64                              # 向量维度
+nb = 100000                         # 向量集大小
+nq = 10000                          # 查询次数
+np.random.seed(1234)                # 随机种子,使结果可复现
+xb = np.random.random((nb, d)).astype('float32')
+xb[:, 0] += np.arange(nb) / 1000.
+xq = np.random.random((nq, d)).astype('float32')
+xq[:, 0] += np.arange(nq) / 1000.
+
+import faiss
+
+nlist = 100
+k = 4
+quantizer = faiss.IndexFlatL2(d)  # the other index
+index = faiss.IndexIVFFlat(quantizer, d, nlist, faiss.METRIC_L2)
+index = faiss.IndexIVFFlat(quantizer, d, nlist)
+
+# here we specify METRIC_L2, by default it performs inner-product search
+
+index.train(xb)
+index.add(xb) # 添加索引可能会有一点慢
+
+# 测试是否正常
+D, I = index.search(xb[:5], k) # sanity check
+print(I)
+print(D)
+
+D, I = index.search(xq[:5], k)     # 搜索
+print(I)
+print(D)
+
+"""
+通过改变nprobe的值，发现在nprobe值较小的时候，查询可能会出错，但时间开销很小，
+随着nprobe的值增加，精度逐渐增大，但时间开销也逐渐增加，当nprobe= nlist 时，等效于IndexFlatL2索引类型。
+"""
+index.nprobe = 10              # 默认 nprobe 是1 ,可以设置的大一些试试
+D, I = index.search(xq[:5], k)
+print(I)
+print(D)
+
+
+
+"""
+乘积量化索引 Product Quantization
+在上述两种索引方式中，在index中都保存了完整的数据库向量，在数据量非常大的时候会占用太多内存，甚至超出内存限制。
+在faiss中，当数据量非常大的时候，一般采用乘积量化方法保存原始向量的有损压缩形式,故而查询阶段返回的结果也是近似的。
+"""
+"""
+
+实验发现，乘积量化后查询返回的距离值与真实值相比偏小，返回的结果只是近似值。
+查询自身时能够返回自身，但真实查询时效果较差，这里只是使用了正态分布的数据集，在真实使用时效果会更好，原因有：
+1.正态分布的数据相对更难查询，难以聚类/降维；
+2.自然数据相似的向量与不相似的向量差别更大，更容易查找；
+"""
+
+import numpy as np
+d = 512          #维数
+n_data = 2000
+np.random.seed(0)
+data = []
+mu = 3
+sigma = 0.1
+for i in range(n_data):
+    data.append(np.random.normal(mu, sigma, d))
+data = np.array(data).astype('float32')
+
+
+query = []
+n_query = 10
+mu = 3
+sigma = 0.1
+np.random.seed(12)
+query = []
+for i in range(n_query):
+    query.append(np.random.normal(mu, sigma, d))
+query = np.array(query).astype('float32')
+
+
+# 查看第六个向量是不是符合正态分布
+import matplotlib.pyplot as plt
+plt.hist(data[5])
+plt.show()
+
+
+query_self = data[:5]  # 查询本身
+
+nlist = 50 # # 将数据库向量分割为多少了维诺空间
+m = 8                             # 列方向划分个数，必须能被d整除
+k = 10
+quantizer = faiss.IndexFlatL2(d)
+"""
+d:输入向量维度
+nlist:将数据库向量分割为多少了维诺空间
+m:列方向划分个数，必须能被d整除
+4,表示每个子向量被编码为 4 bits
+"""
+index = faiss.IndexIVFPQ(quantizer, d, nlist, m, 4) # 4 表示每个子向量被编码为 4 bits
+index.train(data)
+index.add(data)
+index.nprobe = 50
+dis, ind = index.search(query_self, k)  # 查询自身
+print(dis)
+print(ind)
+dis, ind = index.search(query, k)  # 真实查询
+print(dis)
+print(ind)
+
+
+
+
+
+""" 
+是否需要精确的结果¶
+"""
+
+
+
+#数据
+import numpy as np
+d = 512          #维数
+n_data = 2000
+np.random.seed(0)
+data = []
+mu = 3
+sigma = 0.1
+for i in range(n_data):
+    data.append(np.random.normal(mu, sigma, d))
+data = np.array(data).astype('float32')   # (2000, 512)
+
+#ids, 6位随机数
+ids = []
+start = 100000
+for i in range(data.shape[0]):
+    ids.append(start)
+    start += 100
+ids = np.array(ids) # array([100000, 100100, 100200, ..., 299700, 299800, 299900])
+
+# 不支持add_with_ids
+index = faiss.index_factory(d, "Flat")
+index.add(data)
+dis, ind = index.search(data[:5], 10)
+print(dis)
+print(ind)
+
+
+index = faiss.index_factory(d, "IDMap, Flat")
+index.add_with_ids(data, ids)
+dis, ind = index.search(data[:5], 10)
+print(ind)   # 返回的结果是我们自己定义的id
+print(dis)
+
+
+""" 
+如果不在意内存占用空间，使用“HNSWx”¶
+如果内存空间很大，数据库很小，HNSW是最好的选择，速度快，精度高，一般4<=x<=64。不支持add_with_ids，不支持移除向量，不需要训练，不支持GPU。
+
+ """
+
+index = faiss.index_factory(d, "HNSW8")
+index.add(data)
+dis, ind = index.search(data[:5], 3)
+print(ind)
+
+"""
+
+如果稍微有点在意，使用“..., Flat“
+"..."是聚类操作，聚类之后将每个向量映射到相应的bucket。该索引类型并不会保存压缩之后的数据，而是保存原始数据，所以内存开销与原始数据一致。
+通过nprobe参数控制速度/精度。
+支持GPU,但是要注意，选用的聚类操作必须也支持。
+"""
+
+index = faiss.index_factory(d, "IVF100, Flat")
+index.train(data)
+index.add(data)
+dis, ind = index.search(data[:5], 10)
+print(ind)
+
+"""
+如果很在意，使用”PCARx,...,SQ8“¶
+如果保存全部原始数据的开销太大，可以用这个索引方式。包含三个部分，
+1.降维
+2.聚类
+3.scalar 量化，每个向量编码为8bit 不支持GPU
+"""
+
+
+index = faiss.index_factory(d, "PCAR16,IVF50,SQ8")  #每个向量降为16维
+index.train(data)
+index.add(data)
+dis, ind = index.search(data[:5], 10)
+print(ind)
+
+
+"""
+如果非常非常在意，使用"OPQx_y,...,PQx"
+y需要是x的倍数，一般保持y<=d，y<=4*x。 支持GPU。
+
+"""
+
+index = faiss.index_factory(d, "OPQ32_512,IVF50,PQ32")
+index.train(data)
+index.add(data)
+dis, ind = index.search(data[:5], 10)
+print(ind)
+
+
+""" I/O操作¶ """
+
+faiss.write_index(index, "index_file.index") #将index保存为index_file.index文件
+index = faiss.read_index("index_file.index") #读入index_file.index文件
+#完全复制一个index
+index_new = faiss.clone_index(index)
+index_cpu_to_gpu = faiss.index_cpu_to_gpu()
+#index_cpu_to_gpu
+#todo
+
+
+"""  
+
+Index factory¶
+用一个字符串构建Index，用逗号分割可以分为3部分：1.前处理部分；2.倒排表（聚类）；3.细化后处理部分
+
+在前处理部分（preprocessing）：
+1.PCA。"PCA64"表示通过PCA将数据维度降为64，"PCAR64"表示增加了随机旋转（random rotation）。
+2.OPQ。"OPQ16"表示用OPQMatrix将数组量化为16位（待完善）
+倒排表部分（inverted file）：
+1."IVF4096"表示建立一个大小是4096的倒排表，即聚类为4096类。 细化部分（refinement）：
+1."Flat"保存完整向量，通过IndexFlat或者IndexIVFFlat实现；
+2."PQ16"将向量编码为16byte，通过IndexPQ或者IndexIVFPQ实现；
+"""
+
+index = index_factory(128, "PCA80,Flat") # 原始向量128维，用PCA降为80维，然后应用精确搜索
+index = index_factory(128, "OPQ16_64,IMI2x8,PQ8+16") #原始向量128维，用OPQ降为64维，分为16类，用2*8bit的倒排多索引，用PQ编码为8byte保存，检索时使用16byte。
+
+
+
+""" 
+ID映射¶
+默认情况下，faiss会为每个输入的向量记录一个次序id，在使用中也可以为向量指定任意我们需要的id。
+部分index类型有add_with_ids方法，可以为每个向量对应一个64-bit的id，搜索的时候返回这个指定的id。 
+"""
+
+
+#导入faiss
+import sys
+sys.path.append('/home/maliqi/faiss/python/')
+import faiss
+import numpy as np
+
+#获取数据和Id
+d = 512
+n_data = 2000
+data = np.random.rand(n_data, d).astype('float32')
+ids = np.arange(100000, 102000)  #id设定为6位数整数
+
+nlist = 10
+quantizer = faiss.IndexFlatIP(d)
+index = faiss.IndexIVFFlat(quantizer, d, nlist, faiss.METRIC_L2)
+index.train(data)
+index.add_with_ids(data, ids)
+d, i = index.search(data[:5], 5)
+print(i)  #返回的id应该是我们自己设定的
+
+""" 
+但是对有些Index类型，并不支持add_with_ids，因此需要与其他Index类型结合，将默认的id映射到指定id，用IndexIDMap类实现。
+指定的ids不能是字符串，只能是整数。
+"""
+
+"""
+
+index = faiss.IndexFlatL2(data.shape[1]) 
+index.add_with_ids(data, ids)  #报错
+"""
+
+index2 = faiss.IndexIDMap(index)
+index2.add_with_ids(data, ids)  #将index的id映射到index2的id,会维持一个映射表
+
+
+"""
+
+数据转换
+有些时候需要在索引之前转换数据。转换类继承了VectorTransform类，将输入向量转换为输出向量。
+1)随机旋转,类名RandomRotationMatri,用以均衡向量中的元素，一般在IndexPQ和IndexLSH之前；
+2）PCA,类名PCAMatrix，降维；
+3）改变维度，类名RemapDimensionsTransform，可以升高或降低向量维数
+
+"""
+
+"""
+举例：PCA降维（通过IndexPreTransform）¶
+输入向量是2048维，需要减少到16byte。
+"""
+data = np.random.rand(n_data, 2048).astype('float32')
+# the IndexIVFPQ will be in 256D not 2048
+coarse_quantizer = faiss.IndexFlatL2 (256)
+sub_index = faiss.IndexIVFPQ (coarse_quantizer, 256, 16, 16, 8)
+# PCA 2048->256
+# 降维后随机旋转 (第四个参数)
+pca_matrix = faiss.PCAMatrix (2048, 256, 0, True)
+
+#- the wrapping index
+index = faiss.IndexPreTransform (pca_matrix, sub_index)
+
+# will also train the PCA
+index.train(data)  #数据需要是2048维
+# PCA will be applied prior to addition
+index.add(data)
+
+
+
+"""
+
+举例：升维
+有时候需要在向量中插入0升高维度，一般是我们需要 1）d是4的整数倍，有利于举例计算； 2）d是M的整数倍。
+
+"""
+
+d = 512
+M = 8   #M是在维度方向上分割的子空间个数
+d2 = int((d + M - 1) / M) * M
+remapper = faiss.RemapDimensionsTransform (d, d2, True)
+index_pq = faiss.IndexPQ(d2, M, 8)
+index = faiss.IndexPreTransform (remapper, index_pq) #后续可以添加数据/索引
+
+
+
+"""
+
+对搜索结果重新排序
+当查询向量时，可以用真实距离值对结果进行重新排序。
+在下面的例子中，搜索阶段会首先选取4*10个结果，然后对这些结果计算真实距离值，再从中选取10个结果返回。IndexRefineFlat保存了全部的向量信息，内存开销不容小觑。
+
+"""
+
+data = np.random.rand(n_data, d).astype('float32')
+nbits_per_index = 4
+q = faiss.IndexPQ (d, M, nbits_per_index)
+rq = faiss.IndexRefineFlat (q)
+rq.train (data)
+rq.add (data)
+rq.k_factor = 4
+dis, ind = rq.search (data[:5], 10)
+print(ind)
+
+"""
+略
+综合多个index返回的结果¶ 
+当数据集分布在多个index中，需要在每个index中都执行搜索，然后使用IndexShards综合得到结果。同样也适用于index分布在不同的GPU的情况。
+"""
+
+
+
+
+"""
+基础索引类型¶
+
+"""
+
+"""
+数据准备¶
+
+"""
+
+import numpy as np
+d = 512          #维数
+n_data = 2000
+np.random.seed(0)
+data = []
+mu = 3
+sigma = 0.1
+for i in range(n_data):
+    data.append(np.random.normal(mu, sigma, d))
+data = np.array(data).astype('float32')
+
+#query
+query = []
+n_query = 10
+np.random.seed(12)
+query = []
+for i in range(n_query):
+    query.append(np.random.normal(mu, sigma, d))
+query = np.array(query).astype('float32')
+
+#导入faiss
+import sys
+sys.path.append('/home/maliqi/faiss/python/')
+import faiss
+
+
+
+"""
+1.精确搜索（Exact Search for L2）¶
+一种暴力搜索方法，遍历数据库中的每一个向量与查询向量对比。
+"""
+
+index = faiss.IndexFlatL2(d)
+# index = faiss.index_factory(d, "Flat") #两种定义方式
+index.add(data)
+dis, ind = index.search(query, 10)
+print(dis)
+
+
+"""
+
+2.精确搜索（Exact Search for Inner Product）¶
+当数据库向量是标准化的，计算返回的distance就是余弦相似度。
+"""
+index = faiss.IndexFlatIP(d)
+index.add(data)
+dis, ind = index.search(query, 10)
+print(dis)
+
+"""
+
+3.（Hierarchical Navigable Small World graph exploration）¶
+返回近似结果。
+"""
+
+index = faiss.IndexHNSWFlat(d,16)
+index.add(data)
+dis, ind = index.search(query, 10)
+print(dis)
+
+"""
+
+4.倒排表搜索（Inverted file with exact post-verification）¶
+快速入门部分介绍过。
+"""
+nlist = 50
+quantizer = faiss.IndexFlatL2(d)
+index = faiss.IndexIVFFlat(quantizer, d, nlist)
+index.train(data)
+index.add(data)
+dis, ind = index.search(query, 10)
+print(dis)
+
+
+"""
+5.LSH（Locality-Sensitive Hashing (binary flat index)）¶
+
+"""
+
+nbits = 2 * d
+index = faiss.IndexLSH(d, nbits)
+index.train(data)
+index.add(data)
+dis, ind = index.search(query, 10)
+print(dis)
+
+"""
+6.SQ量化（Scalar quantizer (SQ) in flat mode）¶
+
+"""
+
+index = faiss.IndexScalarQuantizer(d, 4)
+index.train(data)
+index.add(data)
+dis, ind = index.search(query, 10)
+print(dis)
+
+"""
+7.PQ量化（Product quantizer (PQ) in flat mode）¶
+
+"""
+M = 8 #必须是d的因数
+nbits = 6  #只能是8， 12， 16
+index = faiss.IndexPQ(d, M, nbits)
+index.train(data)
+index.add(data)
+dis, ind = index.search(query, 10)
+print(dis)
+
+
+"""
+8.倒排表乘积量化（IVFADC (coarse quantizer+PQ on residuals)）¶
+"""
+
+M = 8
+nbits = 4
+nlist = 50
+quantizer = faiss.IndexFlatL2(d)
+index = faiss.IndexIVFPQ(quantizer, d, nlist, M, nbits)
+index.train(data)
+index.add(data)
+dis, ind = index.search(query, 10)
+print(dis)
+
+"""
+
+cell-probe方法¶
+为了加速索引过程，经常采用划分子类空间（如k-means）的方法，虽然这样无法保证最后返回的结果是完全正确的。先划分子类空间，再在部分子空间中搜索的方法，就是cell-probe方法。
+具体流程为：
+1）数据集空间被划分为n个部分，在k-means中，表现为n个类；
+2）每个类中的向量保存在一个倒排表中，共有n个倒排表；
+3）查询时，选中nprobe个倒排表；
+4）将这几个倒排表中的向量与查询向量作对比。
+在这种方法中，只需要排查数据库中的一部分向量，大约只有nprobe/n的数据，因为每个倒排表的长度并不一致（每个类中的向量个数不一定相等）。
+
+cell-probe粗量化
+在一些索引类型中，需要一个Flat index作为粗量化器，如IndexIVFFlat,在训练的时候会将类中心保存在Flat index中，在add和search阶段，会首先判定将其落入哪个类空间。在search阶段，nprobe参数需要调整以权衡检索精度与检索速度。
+实验表明，对高维数据，需要维持比较高的nprobe数值才能保证精度。
+
+与LSH的优劣
+LSH也是一种cell-probe方法，与其相比，LSH有一下一点不足：
+1）LSH需要大量的哈希方程，会带来额外的内存开销；
+2）哈希函数不适合输入数据。
+"""
+
+
