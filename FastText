@@ -1,0 +1,296 @@
+
+from tqdm import tqdm
+import jieba
+
+## FastText文章中使用的搜狗新闻数据集
+# * Categories
+#   + sports
+#   + finance
+#   + entertainment
+#   + automobile
+#   + technology”
+## 下载数据 ，预先处理
+# 1. gbk --> utf-8
+# 2. 从<url>提取类别标签
+# 3. 从<content>提取文本内容
+#
+# 参考资料
+# * [word2vec 构建中文词向量](http://www.cnblogs.com/Newsteinwell/p/6034747.html)
+# * [Automatic Online News Issue Construction in Web Environment WWW2008](http://wwwconference.org/www2008/papers/pdf/p457-wang.pdf)
+#
+
+# 这个实验采用搜狗实验室的搜狗新闻语料库，数据链接
+# http://www.sogou.com/labs/resource/cs.php
+# 1-1. 下载下来的文件名为： news_sohusite_xml.full.zip
+# 1-2. 解压 --> xvf news_sohusite_xml.dat
+# 1-3.A 字符编码转换  cat news_sohusite_xml.dat | iconv -f gbk -t utf-8 -c | grep "<content>\|<url>"
+# > corpus_labeled.txt
+# 1-3.B 使用codec module读入gbk编码的原始文档，使用unicode或者编码为utf-8
+
+
+file_raw_path = '/home/bb5/xw/chat_robot/corpus_labeled.txt'
+
+def function1():
+    label_raw = []
+    data_raw = []
+    i = 0
+    with open(file_raw_path, encoding='utf-8') as fr:
+        for line in tqdm(fr):
+            if i % 2 == 0:
+                label_raw.append(line[5:-6])
+            else:
+                data_raw.append(line[9:-11])
+            i += 1
+
+    print('每一个样本有一个url，从中我们可以提取一个话题标签',
+          [x[:30] for x in label_raw[:len(label_raw):len(label_raw) // 10]])
+
+    print("统计每个类别的文本数量，对数据有一个初步了解")
+    labels = []
+    for label in label_raw:
+        labels.append(label[7:].split('.')[0])
+    from collections import Counter
+    label_stat = Counter(labels)
+    print('前20文本数量', label_stat.most_common(20))
+
+    # ### 根据论文`Character Level Convolutional Neural Networks for Text Classification (2015)`的描述，选择下述5类话题的样本
+    # 1. 'sports'
+    # 2. 'stock' // finance
+    # 3. 'yule'  // entertainment
+    # 4. 'auto'  // automobile
+    # 5. 'it'    // technology”
+
+    # 定义lambda函数 去掉文本中怪异符号，参考自
+    # https://gist.github.com/mrvege/2ba6a437f0a4c4812f21#file-filterpunct-py-L5
+
+    punct = set(
+        u''':!),.:;?]}¢'"、。〉》」』】〕〗〞︰︱︳﹐､﹒﹔﹕﹖﹗﹚﹜﹞！），．＊：；Ｏ？｜｝︴︶︸︺︼︾﹀﹂﹄﹏､～￠々‖•·ˇˉ―--′’”([{£¥'"‵〈《「『【〔〖（［｛￡￥〝︵︷︹︻︽︿﹁﹃﹙﹛﹝（｛“‘-—_…０１２３４５６７８９''')
+    ## 对str/unicode
+    filterpunt = lambda s: ''.join(filter(lambda x: x not in punct, s))
+    ## 对list
+    # filterpuntl = lambda l: list(filter(lambda x: x not in punct, l))
+
+    # 提取既定分类下的标签和文本
+    cat_selected = set(['sports', 'stock', 'yule', 'auto', 'it'])
+    label_selected = []
+    content_selected = []
+    for i in tqdm(range(len(labels))):
+        if labels[i] in cat_selected and len(data_raw[i]) > 10:
+            label_selected.append(labels[i])
+            content_selected.append(filterpunt(data_raw[i]))
+
+    print('corpus样本\n')
+    for i in range(0, 5000, 1234):
+        print('example %d \n\t%s\n\t%s\n' % (i, label_selected[i], content_selected[i]))
+
+    # %%
+    # 结巴分词
+    print("jieba分词，非常费时:\n")
+    data_words = []
+    for line in tqdm(content_selected):
+        data_words.append([' '.join(jieba.cut(line, cut_all=False))])
+
+    # %%
+    # 随机查看分词情况
+    for i in range(0, 5000, 1234):
+        print('sentence %d' % i)
+        print(' '.join(data_words[i]))
+
+    # save model
+    # 测试集
+    with open('sogou_news_test.txt', 'w') as f:
+        for i in range(len(data_words)):
+            if i % 5 == 0:
+                s = '__label__' + label_selected[i] + ' '
+                s = s + " ".join([x for x in data_words[i]])
+                f.write(s)
+                f.write('\n')
+
+    # 训练集
+    with open('sogou_news_train.txt', 'w') as f:
+        for i in range(len(data_words)):
+            if i % 5 != 0:
+                s = '__label__' + label_selected[i] + ' '
+                s = s + " ".join([x for x in data_words[i]])
+                f.write(s)
+                f.write('\n')
+
+    # fasttext作用
+    # Word representation learning
+    # Obtaining word vectors for out-of-vocabulary words
+    # Text classification
+    # 总之，fasttext提供了一种有效且快速的方式生成词向量以及进行文档分类
+    """
+    fasttext模型架构和Word2Vec中的CBOW模型很类似。不同之处在于，fasttext预测标签，
+    而CBOW模型预测中间词,skip-gram模型预测上下文
+    fasttext设计的初衷就是为了作为一个文档分类器，副产品是也生成了词向量
+    """
+
+    import fasttext
+
+    # 参考 https://fasttext.cc/docs/en/supervised-tutorial.html
+    """
+      训练一个监督模型, 返回一个模型对象
+
+      @param input:           训练数据文件路径
+      @param lr:              学习率
+      @param dim:             向量维度
+      @param ws:              cbow模型时使用
+      @param epoch:           次数
+      @param minCount:        词频阈值, 小于该值在初始化时会过滤掉
+      @param minCountLabel:   类别阈值，类别小于该值初始化时会过滤掉
+      @param minn:            构造subword时最小char个数
+      @param maxn:            构造subword时最大char个数
+      @param neg:             负采样
+      @param wordNgrams:      n-gram个数
+      @param loss:            损失函数类型, softmax, ns: 负采样, hs: 分层softmax
+      @param bucket:          词扩充大小, [A, B]: A语料中包含的词向量, B不在语料中的词向量
+      @param thread:          线程个数, 每个线程处理输入数据的一段, 0号线程负责loss输出
+      @param lrUpdateRate:    学习率更新
+      @param t:               负采样阈值
+      @param label:           类别前缀
+      @param verbose:         ??
+      @param pretrainedVectors: 预训练的词向量文件路径, 如果word出现在文件夹中初始化不再随机
+      @return model object
+    """
+    classifier = fasttext.train_supervised('sogou_news_train.txt',
+                                           label_prefix='__label__',
+                                           dim=100,
+                                           lr=0.01, wordNgrams=2, minCount=1,
+                                           epoch=5)
+    classifier.save_model("model_file.bin")
+    result_tr = classifier.test('sogou_news_test.txt')
+    预测分类标签
+    test_lable = classifier.predict('播放 简介 特立独行 的 甲壳虫 自 进入 中国 市场 以后 就 受到 了 消费者 的 关注 甲壳虫 独特 的 外观设计 让 很多 女性 消费者 对 其 喜爱 有')
+    print('预测标签：', test_lable)
+    test_lable = classifier.predict('中国市场消费者女性喜爱 ')
+    print('预测标签：', test_lable)
+    test_lable = classifier.predict('预训练的词向量文件路径, 如果word出现在文件夹中初始化不再随机 ', k=3)
+    print('预测标签：', test_lable)
+
+
+
+
+
+# 尝试使用 gensim 的FastText
+from gensim.models import FastText
+from gensim.test.utils import common_texts  # some example sentences
+print(common_texts[0]) # ['human', 'interface', 'computer']
+print(len(common_texts))
+model = FastText(size=100, window=3, min_count=1, sentences=common_texts)
+print(len(model.wv['human']))
+
+
+def function2():
+    # 另种特征方法尝试 FastText
+    #
+    # 文本处理，提取标签和内容
+    file_raw_path = '/home/bb5/xw/chat_robot/corpus_labeled.txt'
+
+    n = 0
+    new_text = open('new_label.txt', 'w')
+    new_text.truncate()
+    new_text.close()
+    new_text = open('new_label.txt', 'w')
+    with open(file_raw_path) as f:
+        for l in f.readlines():
+            if n % 2 == 0:
+                tmp = l[12:].split('.')[0]
+                label = '__label__' + tmp
+                # print(tmp,l)
+                new_text.write(label)
+                new_text.write('\n')
+            n += 1
+    new_text.close()
+
+    n = 0
+    new_text = open('new_content.txt', 'w')
+    new_text.truncate()
+    new_text.close()
+    new_text = open('new_content.txt', 'w')
+    with open(file_raw_path) as f:
+        for l in f.readlines():
+            if n % 2 == 1:
+                tmp = l[9:-11]
+                new_text.write(tmp)
+                new_text.write('\n')
+            n += 1
+    new_text.close()
+
+    n = 0
+    news_label = []
+    news_content = []
+    with open(file_raw_path) as f:
+        for l in f.readlines():
+            if n % 2 == 0:
+                tmp = l[12:].split('.')[0]
+                label = '__label__' + tmp
+                # print(tmp,l)
+                news_label.append(label)
+            if n % 2 == 1:
+                tmp = re.sub('<content>|</content>|\n', '', l)
+                jieba.cut()
+                news_content.append(tmp)
+            n += 1
+
+    cat_selected = set(['sports', 'stock', 'yule', 'auto', 'it'])
+    news_list = []
+    news = open('news.txt', 'w')
+    news.truncate()
+    news.close()
+    news = open('news.txt', 'w')
+    for key, value in zip(news_label, news_content):
+        if len(str(key)) >= 2 and len(str(value)) >= 10 and key[9:] in cat_selected:
+            value = jieba.cut(value)
+            tmp = key + ' ' + ' '.join(value)
+            news.write(tmp)
+            news.write('\n')
+            news_list.append(tmp)
+
+    news.close()
+
+    # shuffle
+    import random
+    random.shuffle(news_list)
+    train_size = int(len(news_list) * 0.7)
+    test_size = len(news_list) - train_size
+
+    train = news_list[0:int(len(news_list) * 0.7)]
+    test = news_list[int(len(news_list) * 0.7) + 1:-1]
+
+    news = open('train_new.txt', 'w')
+    news.truncate()
+    news.close()
+    with open('train_new.txt', 'w') as f:
+        for value in train:
+            f.write(value)
+            f.write('\n')
+    f.close()
+
+    news = open('test_new.txt', 'w')
+    news.truncate()
+    news.close()
+    with open('test_new.txt', 'w') as f:
+        for value in test:
+            f.write(value)
+            f.write('\n')
+    f.close()
+
+    import fasttext
+    model = fasttext.train_supervised(input='train_new.txt', lr=0.5, epoch=25, wordNgrams=2, minCount=1, dim=50, )
+    model.save_model("model_file.bin")
+
+    result_tr = model.test('test_new.txt')
+
+    # 预测分类标签
+    test_lable = model.predict('播放 简介 特立独行 的 甲壳虫 自 进入 中国 市场 以后 就 受到 了 消费者 的 关注 甲壳虫 独特 的 外观设计 让 很多 女性 消费者 对 其 喜爱 有')
+    print('预测标签：', test_lable)
+    test_lable = model.predict('中国市场消费者女性喜爱 ')
+    print('预测标签：', test_lable)
+    test_lable = model.predict('预训练的词向量文件路径, 如果word出现在文件夹中初始化不再随机 ', k=3)
+    print('预测标签：', test_lable)
+
+
+if __name__ == '__main__':
+    function1()
+    function2()
