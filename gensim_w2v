@@ -1,0 +1,39 @@
+
+import word2vec
+import jieba
+
+file_raw_path = '/home/bb5/xw/chat_xw_test/new_content.txt'
+
+
+content = open('w2v_content.txt','w')
+content.truncate()
+content.close()
+
+content = open('w2v_content.txt','w')
+
+w2v_tok=[]
+with open(file_raw_path) as f :
+    for i,j in enumerate(f.readlines()):
+        tmp = jieba.cut(j)
+        tmp = ' '.join(tmp)
+        content.write(str(tmp))
+        content.write('\n')
+        if i%10000==0:
+            print(i,tmp)
+
+
+from gensim.test.utils import common_texts
+from gensim.models import Word2Vec
+from gensim.models.word2vec import LineSentence
+model_ = Word2Vec(sentences=LineSentence('w2v_content.txt'), size=100, window=5, min_count=1, workers=4)
+# 词向量
+vec = model_.wv['体育']
+model_.get_latest_training_loss()
+# 最相近的分词
+model_.wv.similar_by_word('体育')
+# 词之间的相似度
+model_.wv.similarity('体育', '足球')
+# 找出不同类的词
+model_.wv.doesnt_match(['体育', '足球','.'])
+
+# 更多操作参考  https://radimrehurek.com/gensim/models/keyedvectors.html?highlight=similar_by_word#gensim.models.keyedvectors.KeyedVectors.similar_by_word
